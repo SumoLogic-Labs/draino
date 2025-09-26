@@ -56,6 +56,8 @@ const (
 	drainRetryAnnotationValue = "true"
 
 	drainoConditionsAnnotationKey = "draino.planet.com/conditions"
+
+	NodeBloomfilterLabelKey = "sumologic.com/workerGroup"
 )
 
 // Opencensus measurements.
@@ -152,6 +154,25 @@ func (h *DrainingResourceEventHandler) OnDelete(obj interface{}) {
 	h.drainScheduler.DeleteSchedule(n.GetName())
 }
 
+func IsBloomfilterNode(n *core.Node, logger *zap.Logger) (hasLabel, enabled bool) {
+	log := logger.With(zap.String("node", n.GetName()))
+	if n.Labels == nil {
+		log.Info("Node has no labels")
+		return false, true
+	}
+	v, ok := n.Labels[NodeBloomfilterLabelKey]
+	if !ok {
+		log.Info("Node has no bloomfilter label" + fmt.Sprintf("%v", n.Labels))
+		return false, true
+	}
+
+	switch v {
+	case "bloomfilter":
+		return true, false
+	}
+	return false, true // unknown label value is just like if the label does not exist
+}
+
 func (h *DrainingResourceEventHandler) HandleNode(n *core.Node) {
 	badConditions := h.offendingConditions(n)
 	if len(badConditions) == 0 {
@@ -164,6 +185,14 @@ func (h *DrainingResourceEventHandler) HandleNode(n *core.Node) {
 
 	// First cordon the node if it is not yet cordonned
 	if !n.Spec.Unschedulable {
+		IsBloomfilterNode, enabled := IsBloomfilterNode(n, h.logger)
+		if IsBloomfilterNode && !enabled {
+			hasSChedule, _ := h.drainScheduler.HasSchedule(n.GetName())
+			if !hasSChedule {
+				h.scheduleDrain(n)
+			}
+			return
+		}
 		h.cordon(n, badConditions)
 	}
 

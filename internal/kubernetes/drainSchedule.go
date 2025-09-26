@@ -31,8 +31,9 @@ type DrainSchedules struct {
 	sync.Mutex
 	schedules map[string]*schedule
 
-	lastDrainScheduledFor time.Time
-	period                time.Duration
+	lastDrainScheduledFor            time.Time
+	lastDrainScheduledForBloomFilter time.Time
+	period                           time.Duration
 
 	logger        *zap.Logger
 	drainer       Drainer
@@ -80,6 +81,16 @@ func (d *DrainSchedules) WhenNextSchedule() time.Time {
 	return when
 }
 
+func (d *DrainSchedules) WhenNextScheduleBloomFilter() time.Time {
+	// compute drain schedule time
+	sooner := time.Now().Add(SetConditionTimeout + time.Second)
+	when := d.lastDrainScheduledForBloomFilter.Add(time.Hour * 1)
+	if when.Before(sooner) {
+		when = sooner
+	}
+	return when
+}
+
 func (d *DrainSchedules) Schedule(node *v1.Node) (time.Time, error) {
 	d.Lock()
 	if sched, ok := d.schedules[node.GetName()]; ok {
@@ -87,9 +98,17 @@ func (d *DrainSchedules) Schedule(node *v1.Node) (time.Time, error) {
 		return sched.when, NewAlreadyScheduledError() // we already have a schedule planned
 	}
 
+	var when time.Time
 	// compute drain schedule time
-	when := d.WhenNextSchedule()
-	d.lastDrainScheduledFor = when
+	IsBloomfilterNode, enabled := IsBloomfilterNode(node, d.logger)
+	if IsBloomfilterNode && !enabled {
+		when = d.WhenNextScheduleBloomFilter()
+		d.lastDrainScheduledForBloomFilter = when
+	} else {
+		when = d.WhenNextSchedule()
+		d.lastDrainScheduledFor = when
+	}
+
 	d.schedules[node.GetName()] = d.newSchedule(node, when)
 	d.Unlock()
 
